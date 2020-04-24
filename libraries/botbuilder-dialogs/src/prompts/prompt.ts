@@ -7,7 +7,7 @@
  */
 import { Activity, ActivityTypes, InputHints, MessageFactory, TurnContext } from 'botbuilder-core';
 import { Choice, ChoiceFactory, ChoiceFactoryOptions } from '../choices';
-import { Dialog, DialogInstance, DialogReason, DialogTurnResult } from '../dialog';
+import { Dialog, DialogInstance, DialogReason, DialogTurnResult, DialogEvent } from '../dialog';
 import { DialogContext } from '../dialogContext';
 
 /**
@@ -201,6 +201,16 @@ export abstract class Prompt<T> extends Dialog {
             return Dialog.EndOfTurn;
         }
 
+        // Are we being continued after an interruption?
+        // - The stepCount will be 1 or more if we're running in the context of an AdaptiveDialog
+        //   and we're coming back from an interruption.
+        const stepCount = dc.state.getValue('turn.stepCount');
+        if (typeof stepCount == 'number' && stepCount > 0) {
+            // re-prompt and then end
+            await this.repromptDialog(dc.context, dc.activeDialog);
+            return Dialog.EndOfTurn;
+        }
+
         // Perform base recognition
         const state: PromptState = dc.activeDialog.state as PromptState;
         const recognized: PromptRecognizerResult<T> = await this.onRecognize(dc.context, state.state, state.options);
@@ -209,18 +219,15 @@ export abstract class Prompt<T> extends Dialog {
         let isValid = false;
         if (this.validator) {
             if (state.state['attemptCount'] === undefined) {
-                state.state['attemptCount'] = 1;
+                state.state['attemptCount'] = 0;
             }
             isValid = await this.validator({
                 context: dc.context,
                 recognized: recognized,
                 state: state.state,
                 options: state.options,
-                attemptCount: state.state['attemptCount']
+                attemptCount: ++state.state['attemptCount']
             });
-            if (state.state['attemptCount'] !== undefined) {
-                state.state['attemptCount']++;
-            }
         } else if (recognized.succeeded) {
             isValid = true;
         }
@@ -235,6 +242,17 @@ export abstract class Prompt<T> extends Dialog {
 
             return Dialog.EndOfTurn;
         }
+    }
+
+    protected async onPreBubbleEvent(dc: DialogContext, event: DialogEvent): Promise<boolean> {
+        if (event.name == 'activityReceived' && dc.context.activity.type == ActivityTypes.Message) {
+            // Perform base recognition
+            const state: PromptState = dc.activeDialog.state as PromptState;
+            const recognized: PromptRecognizerResult<T> = await this.onRecognize(dc.context, state.state, state.options);
+            return recognized.succeeded;
+        }
+
+        return false;
     }
 
     public async resumeDialog(dc: DialogContext, reason: DialogReason, result?: any): Promise<DialogTurnResult> {
@@ -301,11 +319,11 @@ export abstract class Prompt<T> extends Dialog {
         let msg: Partial<Activity>;
         switch (style) {
             case ListStyle.inline:
-                msg = ChoiceFactory.inline(choices, text, null, options);
+                msg = ChoiceFactory.inline(choices, text, undefined, options);
                 break;
 
             case ListStyle.list:
-                msg = ChoiceFactory.list(choices, text, null, options);
+                msg = ChoiceFactory.list(choices, text, undefined, options);
                 break;
 
             case ListStyle.suggestedAction:
@@ -321,7 +339,7 @@ export abstract class Prompt<T> extends Dialog {
                 break;
 
             default:
-                msg = ChoiceFactory.forChannel(channelId, choices, text, null, options);
+                msg = ChoiceFactory.forChannel(channelId, choices, text, undefined, options);
                 break;
         }
 
@@ -335,7 +353,11 @@ export abstract class Prompt<T> extends Dialog {
             }
 
             if (msg.attachments) {
-                prompt.attachments = msg.attachments;
+                if (prompt.attachments) {
+                  prompt.attachments = prompt.attachments.concat(msg.attachments);
+                } else {
+                  prompt.attachments = msg.attachments;
+                }
             }
 
             return prompt;
@@ -351,6 +373,6 @@ export abstract class Prompt<T> extends Dialog {
  * @private
  */
 interface PromptState {
-    state: object;
+    state: any;
     options: PromptOptions;
 }

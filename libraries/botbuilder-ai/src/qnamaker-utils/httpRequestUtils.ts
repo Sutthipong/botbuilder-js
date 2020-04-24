@@ -8,9 +8,11 @@
 
 import * as os from 'os';
 const pjson: any = require('../../package.json');
-const request = (new Function('require', 'if (!this.hasOwnProperty("fetch")) { return require("node-fetch"); } else { return this.fetch; }'))(require);
 
 import { QnAMakerEndpoint } from '../qnamaker-interfaces/qnamakerEndpoint';
+
+import { getFetch } from '../globals';
+const fetch = getFetch();
 
 /**
  * Http request utils class.
@@ -43,7 +45,7 @@ export class HttpRequestUtils {
 
         const headers: any = this.getHeaders(endpoint);
 
-        const qnaResult: any = await request(requestUrl, {
+        const qnaResult: any = await fetch(requestUrl, {
             method: 'POST',
             headers: headers,
             timeout: timeout,
@@ -65,14 +67,9 @@ export class HttpRequestUtils {
      */
     private getHeaders(endpoint: QnAMakerEndpoint): any {
         const headers: any = {};
-        const isLegacyProtocol: boolean = endpoint.host.endsWith('v2.0') || endpoint.host.endsWith('v3.0');
 
-        if (isLegacyProtocol) {
-            headers['Ocp-Apim-Subscription-Key'] = endpoint.endpointKey;
-        } else {
-            headers.Authorization = `EndpointKey ${ endpoint.endpointKey }`;
-        }
-
+        headers['Ocp-Apim-Subscription-Key'] = endpoint.endpointKey;
+        headers.Authorization = `EndpointKey ${ endpoint.endpointKey }`;
         headers['User-Agent'] = this.getUserAgent();
         headers['Content-Type'] = 'application/json';
 

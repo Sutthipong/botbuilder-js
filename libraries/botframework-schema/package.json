@@ -1,21 +1,14 @@
 {
   "name": "botframework-schema",
-  "version": "4.1.6",
+  "author": "Microsoft Corp.",
   "description": "Activity schema for the Microsoft Bot Framework.",
+  "version": "4.1.6",
+  "license": "MIT",
   "keywords": [
     "botconnector",
     "bots",
     "chatbots"
   ],
-  "main": "./lib/index.js",
-  "typings": "./lib/index.d.ts",
-  "dependencies": {},
-  "devDependencies": {},
-  "scripts": {
-    "build": "tsc",
-    "clean": "erase /q /s .\\lib",
-    "set-version": "npm version --allow-same-version ${Version}"
-  },
   "homepage": "http://github.com/Microsoft/botbuilder-js",
   "bugs": {
     "url": "http://github.com/Microsoft/botbuilder-js/issues"
@@ -24,8 +17,21 @@
     "type": "git",
     "url": "git@github.com:Microsoft/botbuilder-js.git"
   },
+  "main": "./lib/index.js",
+  "typings": "./lib/index.d.ts",
+  "devDependencies": {
+    "@microsoft/api-extractor": "^7.7.12",
+    "typescript": "3.5.3"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:rollup": "npm run clean && npm run build && api-extractor run --verbose --local",
+    "clean": "erase /q /s .\\lib",
+    "set-version": "npm version --allow-same-version ${Version}",
+    "test:compat": "api-extractor run --verbose"
+  },
   "files": [
     "/lib",
-    "/src"   
+    "/src"
   ]
 }
