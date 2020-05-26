@@ -5,20 +5,11 @@
  * Copyright (c) Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License.
  */
-import { Activity, ActivityTypes, Attachment, CoreAppCredentials, BotAdapter, CardFactory, Channels, InputHints, MessageFactory, OAuthLoginTimeoutKey, TokenResponse, TurnContext, OAuthCard, ActionTypes, ExtendedUserTokenProvider, verifyStateOperationName, StatusCodes, tokenExchangeOperationName, tokenResponseEventName } from 'botbuilder-core';
+import { Activity, ActivityTypes, Attachment, CoreAppCredentials, BotAdapter, CardFactory, Channels, InputHints, MessageFactory, OAuthLoginTimeoutKey, TokenResponse, TurnContext, OAuthCard, ActionTypes, ExtendedUserTokenProvider, verifyStateOperationName, StatusCodes, TokenExchangeInvokeRequest, tokenExchangeOperationName, tokenResponseEventName } from 'botbuilder-core';
 import { Dialog, DialogTurnResult } from '../dialog';
 import { DialogContext } from '../dialogContext';
 import { PromptOptions, PromptRecognizerResult,  PromptValidator } from './prompt';
-import { isSkillClaim } from './skillsHelpers';
-
-/**
- * Request body accepted for a token exchange invoke activity.
- */
-interface TokenExchangeInvokeRequest {
-    id: string;
-    connectionName: string;
-    token: string;
-}
+import { isSkillClaim, getAppIdFromClaims } from './skillsHelpers';
 
 /**
  * Response body returned for a token exchange invoke activity.
@@ -133,6 +124,7 @@ export interface OAuthPromptSettings {
  * ```
  */
 export class OAuthPrompt extends Dialog {
+    private readonly PersistedCaller: string = 'botbuilder-dialogs.caller';
     /**
      * Creates a new OAuthPrompt instance.
      * @param dialogId Unique ID of the dialog within its parent `DialogSet` or `ComponentDialog`.
@@ -159,6 +151,7 @@ export class OAuthPrompt extends Dialog {
         state.state = {};
         state.options = o;
         state.expires = new Date().getTime() + timeout;
+        state[this.PersistedCaller] = OAuthPrompt.createCallerInfo(dc.context);
 
         // Attempt to get the users token
         const output: TokenResponse = await this.getUserToken(dc.context);
@@ -175,7 +168,7 @@ export class OAuthPrompt extends Dialog {
 
     public async continueDialog(dc: DialogContext): Promise<DialogTurnResult> {
         // Recognize token
-        const recognized: PromptRecognizerResult<TokenResponse> = await this.recognizeToken(dc.context);
+        const recognized: PromptRecognizerResult<TokenResponse> = await this.recognizeToken(dc);
 
         // Check for timeout
         const state: OAuthPromptState = dc.activeDialog.state as OAuthPromptState;
@@ -329,10 +322,33 @@ export class OAuthPrompt extends Dialog {
         await context.sendActivity(msg);
     }
 
-    private async recognizeToken(context: TurnContext): Promise<PromptRecognizerResult<TokenResponse>> {
+    private async recognizeToken(dc: DialogContext): Promise<PromptRecognizerResult<TokenResponse>> {
+        const context = dc.context;
         let token: TokenResponse|undefined;
         if (this.isTokenResponseEvent(context)) {
             token = context.activity.value as TokenResponse;
+
+            // Fix-up the DialogContext's state context if this was received from a skill host caller.
+            const state: CallerInfo = dc.activeDialog.state[this.PersistedCaller];
+            if (state !== null) {
+                // Set the ServiceUrl to the skill host's Url
+                dc.context.activity.serviceUrl = state.callerServiceUrl;
+
+                // Recreate a ConnectorClient and set it in TurnState so replies use the correct one
+                if (!(typeof (context.adapter as any).createConnectorClientWithIdentity === 'function')) {
+                    throw new TypeError('OAuthPrompt: ConnectorClientBuilder interface not implemented by the current adapter');
+                }
+
+                // The ConnectorClientBuilder interface is currently not browser friendly, and therefore
+                // not availble in botbuilder-dialogs. Instead the context.adapter is cast to any.
+                const connectorClientBuilder: any = context.adapter;
+                const claimsIdentity = context.turnState.get(context.adapter.BotIdentityKey);
+                const connectorClient = await (context.adapter as any).createConnectorClientWithIdentity(dc.context.activity.serviceUrl, claimsIdentity, state.scope);
+
+                // For JavaScript Maps, set() functions as Add() and Set() in the C# TurnContextStateCollection
+                context.turnState.set(connectorClientBuilder.ConnectorClientKey, connectorClient);
+
+            }
         } else if (this.isTeamsVerificationInvoke(context)) {
             const code: any = context.activity.value.state;
             try {
@@ -367,9 +383,19 @@ export class OAuthPrompt extends Dialog {
                     'The bot\'s BotAdapter does not support token exchange operations. Ensure the bot\'s Adapter supports the ExtendedUserTokenProvider interface.'));
                 throw new Error('OAuthPrompt.recognizeToken(): not supported by the current adapter');
             } else {
-                // No errors. Proceed with token exchange
-                const extendedUserTokenProvider : ExtendedUserTokenProvider = context.adapter as ExtendedUserTokenProvider;
-                const tokenExchangeResponse = await extendedUserTokenProvider.exchangeToken(context, this.settings.connectionName, context.activity.from.id, {token: context.activity.value.token});
+                const extendedUserTokenProvider: ExtendedUserTokenProvider = context.adapter as ExtendedUserTokenProvider;
+                let tokenExchangeResponse: TokenResponse;
+                try {
+                    tokenExchangeResponse = await extendedUserTokenProvider.exchangeToken(
+                        context,
+                        this.settings.connectionName,
+                        context.activity.from.id,
+                        { token: context.activity.value.token });
+                } catch (err) {
+                    // Ignore errors.
+                    // If the token exchange failed for any reason, the tokenExchangeResponse stays undefined
+                    // and we send back a failure invoke response to the caller.
+                }
 
                 if(!tokenExchangeResponse || !tokenExchangeResponse.token) {
                     await context.sendActivity(this.getTokenExchangeInvokeResponse(
@@ -393,6 +419,18 @@ export class OAuthPrompt extends Dialog {
         }
 
         return token !== undefined ? { succeeded: true, value: token } : { succeeded: false };
+    }
+
+    private static createCallerInfo(context: TurnContext) {
+        const botIdentity = context.turnState.get(context.adapter.BotIdentityKey);
+        if (botIdentity && isSkillClaim(botIdentity.claims)) {
+            return {
+                callerServiceUrl: context.activity.serviceUrl,
+                scope: getAppIdFromClaims(botIdentity.claims),
+            };
+        }
+
+        return null;
     }
 
     private getTokenExchangeInvokeResponse(status: number, failureDetail: string, id?: string): Activity {
@@ -473,4 +511,12 @@ interface OAuthPromptState  {
     state: any;
     options: PromptOptions;
     expires: number;        // Timestamp of when the prompt will timeout.
+}
+
+/**
+ * @private
+ */
+interface CallerInfo {
+    callerServiceUrl: string;
+    scope: string;
 }

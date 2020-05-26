@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { BotAdapter, MessageFactory, TurnContext, ActivityTypes } = require('../');
+const { ActivityTypes, BotAdapter, DeliveryModes, MessageFactory, TurnContext } = require('../');
 
 const activityId = `activity ID`;
 
@@ -335,12 +335,16 @@ describe(`TurnContext`, function () {
 
     it(`should round trip a conversation reference using getConversationReference() and applyConversationRefernce().`, function (done) {
         // Convert to reference
-        const reference = TurnContext.getConversationReference(testMessage);
+        const testMessageWithLocale = JSON.parse(JSON.stringify((testMessage)));
+        testMessageWithLocale.locale = 'en_uS'; // Intentionally oddly-cased to check that it isn't defaulted somewhere, but tests stay in English
+        const reference = TurnContext.getConversationReference(testMessageWithLocale);
         assert(reference.activityId, `reference missing activityId.`);
         assert(reference.bot, `reference missing bot.`);
         assert(reference.bot.id === testMessage.recipient.id, `reference bot.id doesn't match recipient.id.`);
         assert(reference.channelId, `reference missing channelId.`);
         assert(reference.conversation, `reference missing conversation.`);
+        assert(reference.locale, `reference missing locale.`);
+        assert(reference.locale === testMessageWithLocale.locale, `reference locale doesn't match locale`);
         assert(reference.serviceUrl, `reference missing serviceUrl.`);
         assert(reference.user, `reference missing user.`);
         assert(reference.user.id === testMessage.from.id, `reference user.id doesn't match from.id.`);
@@ -354,6 +358,8 @@ describe(`TurnContext`, function () {
         assert(activity.from.id === reference.bot.id, `activity from.id doesn't match bot.id`);
         assert(activity.channelId, `activity missing channelId`);
         assert(activity.conversation, `activity missing conversation`);
+        assert(activity.locale, `activity missing locale.`);
+        assert(activity.locale === testMessageWithLocale.locale, `activity locale doesn't match locale`);
         assert(activity.serviceUrl, `activity missing serviceUrl`);
         assert(activity.recipient, `activity missing recipient`);
         assert(activity.recipient.id === reference.user.id, `activity recipient.id doesn't match user.id`);
@@ -365,6 +371,8 @@ describe(`TurnContext`, function () {
         assert(activity2.from.id === reference.user.id, `activity2 from.id doesn't match user.id`);
         assert(activity2.recipient, `activity2 missing recipient`);
         assert(activity2.recipient.id === reference.bot.id, `activity2 recipient.id doesn't match bot.id`);
+        assert(activity2.locale, `activity2 missing locale.`);
+        assert(activity2.locale === testMessageWithLocale.locale, `activity2 locale doesn't match locale`);
         
         // Round trip outgoing activity without a replyToId
         delete reference.activityId;
@@ -452,4 +460,24 @@ describe(`TurnContext`, function () {
             done();
         });
     });
+
+    it('should add to bufferedReplyActivities if TurnContext.activity.deliveryMode === DeliveryModes.ExpectReplies', async () => {
+        const activity = JSON.parse(JSON.stringify(testMessage));
+        activity.deliveryMode = DeliveryModes.ExpectReplies;
+        const context = new TurnContext(new SimpleAdapter(), activity);
+
+        const activities = [ MessageFactory.text('test'), MessageFactory.text('second test') ];
+        const responses = await context.sendActivities(activities);
+
+        assert.strictEqual(responses.length, 2);
+        
+        // For expectReplies all ResourceResponses should have no id.
+        const ids = responses.filter(response => response.id === undefined);
+        assert.strictEqual(ids.length, 2);
+
+        const replies = context.bufferedReplyActivities;
+        assert.strictEqual(replies.length, 2);
+        assert.strictEqual(replies[0].text, 'test');
+        assert.strictEqual(replies[1].text, 'second test');
+    })
 });

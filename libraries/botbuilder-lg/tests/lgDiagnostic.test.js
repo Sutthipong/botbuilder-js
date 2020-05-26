@@ -74,12 +74,20 @@ describe(`LGExceptionTest`, function() {
         assert.strictEqual(diagnostics[1].message.includes(`Duplicated definitions found for template: 'basicTemplate2'`), true);
     });
 
-    it(`TestEmptyLGFile`, function() {
+    it(`TestEmptyTemplate`, function() {
         var diagnostics = GetDiagnostics(`EmptyTemplate.lg`);
 
         assert.strictEqual(1, diagnostics.length);
         assert.strictEqual(DiagnosticSeverity.Warning, diagnostics[0].severity);
         assert.strictEqual(diagnostics[0].message.includes(TemplateErrors.noTemplateBody('template')), true);
+    });
+
+    it(`TestEmptyLGFile`, function() {
+        var diagnostics = GetDiagnostics(`EmptyLGFile.lg`);
+
+        assert.strictEqual(1, diagnostics.length);
+        assert.strictEqual(DiagnosticSeverity.Warning, diagnostics[0].severity);
+        assert.strictEqual(diagnostics[0].message.includes(TemplateErrors.noTemplate), true);
     });
 
     it(`TestErrorStructuredTemplate`, function() {
@@ -107,7 +115,7 @@ describe(`LGExceptionTest`, function() {
     it(`TestErrorTemplateName`, function() {
         var diagnostics = GetDiagnostics(`ErrorTemplateName.lg`);
 
-        assert.strictEqual(6, diagnostics.length);
+        assert.strictEqual(7, diagnostics.length);
         for(const diagnostic of diagnostics)
         {
             assert.strictEqual(DiagnosticSeverity.Error, diagnostic.severity);

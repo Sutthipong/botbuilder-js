@@ -15,5 +15,5 @@ export interface BeginSkillDialogOptions {
     /**
      * The Activity to send to the skill.
      */
-    activity: Activity;
+    activity: Partial<Activity>;
 }

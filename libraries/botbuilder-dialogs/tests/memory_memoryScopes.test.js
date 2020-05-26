@@ -17,6 +17,11 @@ class TestDialog extends Dialog {
     constructor(id, message) {
         super(id);
         this.message = message;
+        this.expression = {
+            tryGetValue: (state) => {
+                return { value: 'resolved value' };
+            }
+        }
     }
 
     async beginDialog(dc, options) {
@@ -95,6 +100,7 @@ describe('Memory - Memory Scopes', function() {
         const memory = scope.getMemory(dc);
         assert(typeof memory == 'object', `memory not returned`);
         assert(memory.message == 'test message');
+        assert(memory.expression == 'resolved value');
     });
 
     it('ClassMemoryScope should not allow setMemory() call.', async function() {
@@ -438,7 +444,7 @@ describe('Memory - Memory Scopes', function() {
         assert(error);
     });
 
-    it('SettingsMemoryScope should return clone of process env.', async function() {
+    it('SettingsMemoryScope should return content of settings.', async function() {
         // Create a DialogState property, DialogSet and register the dialogs.
         const convoState = new ConversationState(new MemoryStorage());
         const dialogState = convoState.createProperty('dialogs');
@@ -447,19 +453,35 @@ describe('Memory - Memory Scopes', function() {
         // Create test context
         const context = new TurnContext(new TestAdapter(), beginMessage);
         const dc = await dialogs.createContext(context);
+        const settings = require('./test.settings.json');
+        dc.context.turnState.set('settings', settings);
 
         // Run test
         const scope = new SettingsMemoryScope();
         const memory = scope.getMemory(dc);
-        assert(typeof memory == 'object', `settings not returned`);
-        let count = 0;
+        assert.equal(typeof memory, 'object', `settings not returned`);
+        assert.equal(memory.string, 'test');
+        assert.equal(memory.int, 3);
+        assert.equal(memory.array[0], 'zero');
+        assert.equal(memory.array[1], 'one');
+        assert.equal(memory.array[2], 'two');
+        assert.equal(memory.array[3], 'three');
+        assert.equal(dc.state.getValue('settings.fakeArray.0'), 'zero');
+        assert.equal(dc.state.getValue('settings.fakeArray.1'), 'one');
+        assert.equal(dc.state.getValue('settings.fakeArray.2'), 'two');
+        assert.equal(dc.state.getValue('settings.fakeArray.3'), 'three');
+        assert.equal(dc.state.getValue('settings.fakeArray.zzz'), 'cat');
         for (const key in process.env) {
             if (typeof process.env[key] == 'string') {
                 assert(memory[key] == process.env[key]);
-                count++;
             }
         }
-        assert(count > 0, `no settings found.`);
+
+        // override settings with process.env
+        assert.equal(dc.state.getValue('settings.to_be_overridden'), 'one');
+        process.env['to_be_overridden'] = 'two';
+        assert.equal(dc.state.getValue('settings.not_to_be_overridden'), 'one');
+        assert.equal(dc.state.getValue('settings.to_be_overridden'), 'two', 'settings should be overriden by environment variables');
     });
 
     it('ThisMemoryScope should return active dialogs state.', async function() {

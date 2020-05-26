@@ -203,7 +203,7 @@ export class TemplatesParser {
     }
 
     private static antlrParseTemplates(text: string, source: string): FileContext {
-        if (!text) {
+        if (!text || text.trim() === '') {
             return undefined;
         }
 
@@ -222,6 +222,7 @@ export class TemplatesParser {
 
 class TemplatesTransformer extends AbstractParseTreeVisitor<any> implements LGTemplateParserVisitor<any> {
     private readonly identifierRegex: RegExp = new RegExp(/^[0-9a-zA-Z_]+$/);
+    private readonly templateNamePartRegex: RegExp = new RegExp(/^[a-zA-Z_][0-9a-zA-Z_]*$/);
     private readonly templates: Templates;
 
     public constructor(templates: Templates) {
@@ -230,7 +231,10 @@ class TemplatesTransformer extends AbstractParseTreeVisitor<any> implements LGTe
     }
 
     public transform(parseTree: ParseTree): Templates {
-        this.visit(parseTree);
+        if (parseTree) {
+            this.visit(parseTree);
+        }
+
         return this.templates;
     }
 
@@ -309,7 +313,7 @@ class TemplatesTransformer extends AbstractParseTreeVisitor<any> implements LGTe
     private checkTemplateName(templateName: string, context: ParserRuleContext): void {
         const functionNameSplitDot = templateName.split('.');
         for(let id of functionNameSplitDot) {
-            if (!this.identifierRegex.test(id)) {
+            if (!this.templateNamePartRegex.test(id)) {
                 const diagnostic = this.buildTemplatesDiagnostic(TemplateErrors.invalidTemplateName, context);
                 this.templates.diagnostics.push(diagnostic);
             }

@@ -5,7 +5,7 @@
  * Copyright (c) Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License.
  */
-import { TurnContext, BotTelemetryClient, NullTelemetryClient } from 'botbuilder-core';
+import { BotTelemetryClient, NullTelemetryClient, telemetryTrackDialogView, TurnContext } from 'botbuilder-core';
 import { Dialog, DialogInstance, DialogReason, DialogTurnResult, DialogTurnStatus } from './dialog';
 import { DialogContext } from './dialogContext';
 import { DialogContainer } from './dialogContainer';
@@ -79,6 +79,10 @@ export class ComponentDialog<O extends object = {}> extends DialogContainer<O> {
     protected initialDialogId: string;
 
     public async beginDialog(outerDC: DialogContext, options?: O): Promise<DialogTurnResult> {
+        await this.checkForVersionChange(outerDC);
+
+        telemetryTrackDialogView(this.telemetryClient, this.id);
+
         // Start the inner dialog.
         const innerDC: DialogContext = this.createChildContext(outerDC)
         const turnResult: DialogTurnResult<any> = await this.onBeginDialog(innerDC, options);
@@ -98,6 +102,8 @@ export class ComponentDialog<O extends object = {}> extends DialogContainer<O> {
     }
 
     public async continueDialog(outerDC: DialogContext): Promise<DialogTurnResult> {
+        await this.checkForVersionChange(outerDC);
+
         // Continue execution of inner dialog.
         const innerDC: DialogContext = this.createChildContext(outerDC)
         const turnResult: DialogTurnResult<any> = await this.onContinueDialog(innerDC);
@@ -112,13 +118,15 @@ export class ComponentDialog<O extends object = {}> extends DialogContainer<O> {
         return Dialog.EndOfTurn;
     }
 
-    public async resumeDialog(dc: DialogContext, reason: DialogReason, result?: any): Promise<DialogTurnResult> {
+    public async resumeDialog(outerDC: DialogContext, reason: DialogReason, result?: any): Promise<DialogTurnResult> {
+        await this.checkForVersionChange(outerDC);
+
         // Containers are typically leaf nodes on the stack but the dev is free to push other dialogs
         // on top of the stack which will result in the container receiving an unexpected call to
         // resumeDialog() when the pushed on dialog ends.
         // To avoid the container prematurely ending we need to implement this method and simply
         // ask our inner dialog stack to re-prompt.
-        await this.repromptDialog(dc.context, dc.activeDialog);
+        await this.repromptDialog(outerDC.context, outerDC.activeDialog);
 
         return Dialog.EndOfTurn;
     }

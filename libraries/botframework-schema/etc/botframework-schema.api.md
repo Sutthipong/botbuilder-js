@@ -157,6 +157,7 @@ export interface AnimationCard {
 // @public
 export interface AppBasedLinkQuery {
     url?: string;
+    state?: string;
 }
 
 // @public
@@ -1249,6 +1250,8 @@ export interface TeamsChannelAccount extends ChannelAccount {
     givenName?: string;
     surname?: string;
     userPrincipalName?: string;
+    tenantId?: string;
+    userRole?: string;
 }
 
 // @public

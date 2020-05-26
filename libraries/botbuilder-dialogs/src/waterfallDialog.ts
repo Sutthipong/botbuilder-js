@@ -5,8 +5,8 @@
  * Copyright (c) Microsoft Corporation. All rights reserved.
  * Licensed under the MIT License.
  */
-import { ActivityTypes } from 'botbuilder-core';
-import { TurnContext } from 'botbuilder-core';
+import { ActivityTypes, Severity } from 'botbuilder-core';
+import { TurnContext, telemetryTrackDialogView } from 'botbuilder-core';
 import { DialogInstance } from './dialog';
 import { Dialog, DialogReason, DialogTurnResult } from './dialog';
 import { DialogContext } from './dialogContext';
@@ -88,6 +88,12 @@ export class WaterfallDialog<O extends object = {}> extends Dialog<O> {
         }
     }
 
+    public getVersion(): string {
+        // Simply return the id + number of steps to help detect when new steps have
+        // been added to a given waterfall.
+        return `${this.id}:${this.steps.length}`;
+    }
+
     /**
      * Adds a new step to the waterfall.
      *
@@ -144,6 +150,8 @@ export class WaterfallDialog<O extends object = {}> extends Dialog<O> {
             'DialogId': this.id,
             'InstanceId': state.values['instanceId']
         }});
+
+        telemetryTrackDialogView(this.telemetryClient, this.id);
 
         // Run the first step
         return await this.runStep(dc, 0, DialogReason.beginCalled);

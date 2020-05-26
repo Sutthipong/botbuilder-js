@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { ActivityTypes, CallerIdConstants, TurnContext } = require('botbuilder-core');
+const { ActivityHandler, ActivityTypes, CallerIdConstants, DeliveryModes, StatusCodes, TurnContext } = require('botbuilder-core');
 const connector = require('botframework-connector');
 const {
     AuthenticationConstants,
@@ -351,9 +351,11 @@ describe(`BotFrameworkAdapter`, function () {
 
         it('ConnectorClient should use httpClient from clientOptions', async () => {
             let sendRequestCalled = false;
+            const outgoingMessageLocale = JSON.parse(JSON.stringify(outgoingMessage));
+            outgoingMessageLocale.locale = 'en-uS'; // Intentionally oddly-cased to check that it isn't defaulted somewhere, but tests stay in English
             class MockHttpClient {
                 async sendRequest(httpRequest) {
-                    assert.deepEqual(outgoingMessage, JSON.parse(httpRequest.body), 'sentActivity should flow through custom httpClient.sendRequest');
+                    assert.deepEqual(outgoingMessageLocale, JSON.parse(httpRequest.body), 'sentActivity should flow through custom httpClient.sendRequest');
                     sendRequestCalled = true;
                     return {
                         request: httpRequest,
@@ -368,7 +370,9 @@ describe(`BotFrameworkAdapter`, function () {
             const customHttpClient = new MockHttpClient();
             const adapter = new BotFrameworkAdapter( {clientOptions: {  httpClient: customHttpClient } });
                 
-            await adapter.continueConversation(reference, async turnContext => {
+            const referenceWithLocale = JSON.parse(JSON.stringify(reference));
+            referenceWithLocale.locale = 'en-uS'; // Intentionally oddly-cased to check that it isn't defaulted somewhere, but tests stay in English
+            await adapter.continueConversation(referenceWithLocale, async turnContext => {
                 await turnContext.sendActivity(outgoingMessage);
             });
 
@@ -384,6 +388,88 @@ describe(`BotFrameworkAdapter`, function () {
                 assert.equal(connectorClient._requestPolicyFactories.length, factories.length,  'requestPolicyFactories from clientOptions parameter is not used.')
             });
         });
+
+        it('createConnectorClientWithIdentity should throw without identity', async () => {
+            const adapter = new BotFrameworkAdapter();
+            try {
+                await adapter.createConnectorClientWithIdentity('https://serviceurl.com');
+                throw new Error('createConnectorClientWithIdentity() should have thrown an error');
+            } catch (err) {
+                assert.strictEqual(err.message, 'BotFrameworkAdapter.createConnectorClientWithIdentity(): invalid identity parameter.');
+            }
+        });
+
+        it('createConnectorClientWithIdentity should use valid passed-in audience', async () => {
+            const adapter = new BotFrameworkAdapter();
+            const appId = '00000000-0000-0000-0000-000000000001';
+            const serviceUrl = 'https://serviceurl.com';
+            const audience = 'not-a-bot-or-channel';
+            const getOAuthScopeSpy = spy(adapter, 'getOAuthScope');
+            const identity = new ClaimsIdentity([
+                { type: AuthenticationConstants.AudienceClaim, value: appId },
+                { type: AuthenticationConstants.VersionClaim, value: '2.0' },
+            ]);
+
+            const buildCredentialsStub = stub(adapter, 'buildCredentials');
+            buildCredentialsStub.callsFake((appId, oAuthScope) => {
+                return Promise.resolve(new MicrosoftAppCredentials(appId, '', undefined, oAuthScope));
+            });
+            const client = await adapter.createConnectorClientWithIdentity(serviceUrl, identity, audience);
+            assert(getOAuthScopeSpy.notCalled, 'adapter.getOAuthScope should not have been called');
+            assert(buildCredentialsStub.calledOnce, 'adapter.buildCredentials should have been called');
+
+            assert.strictEqual(client.credentials.appId, appId);
+            assert.strictEqual(client.credentials.oAuthScope, audience);
+        });
+
+        it('createConnectorClientWithIdentity should use claims with invalid audience', async () => {
+            const adapter = new BotFrameworkAdapter();
+            const appId = '00000000-0000-0000-0000-000000000001';
+            const skillAppId = '00000000-0000-0000-0000-000000000002';
+            const serviceUrl = 'https://serviceurl.com';
+            const audience = ' ';
+            const getOAuthScopeSpy = spy(adapter, 'getOAuthScope');
+            const identity = new ClaimsIdentity([
+                { type: AuthenticationConstants.AudienceClaim, value: appId },
+                { type: AuthenticationConstants.VersionClaim, value: '2.0' },
+                { type: AuthenticationConstants.AuthorizedParty, value: skillAppId },
+            ]);
+
+            const buildCredentialsStub = stub(adapter, 'buildCredentials');
+            buildCredentialsStub.callsFake((appId, oAuthScope) => {
+                return Promise.resolve(new MicrosoftAppCredentials(appId, '', undefined, oAuthScope));
+            });
+            const client = await adapter.createConnectorClientWithIdentity(serviceUrl, identity, audience);
+            assert(getOAuthScopeSpy.calledOnce, 'adapter.getOAuthScope should have been called');
+            assert(getOAuthScopeSpy.calledWith(appId, identity.claims))
+            assert(buildCredentialsStub.calledOnce, 'adapter.buildCredentials should have been called');
+
+            assert.strictEqual(client.credentials.appId, appId);
+            assert.strictEqual(client.credentials.oAuthScope, skillAppId);
+        });
+
+        it('createConnectorClientWithIdentity should use credentials.oAuthScope with bad invalid audience and non-skill claims', async () => {
+            const adapter = new BotFrameworkAdapter();
+            const appId = '00000000-0000-0000-0000-000000000001';
+            const serviceUrl = 'https://serviceurl.com';
+            const audience = ' ';
+            const getOAuthScopeSpy = spy(adapter, 'getOAuthScope');
+            const identity = new ClaimsIdentity([
+                { type: AuthenticationConstants.AudienceClaim, value: appId },
+                { type: AuthenticationConstants.VersionClaim, value: '2.0' }
+            ]);
+
+            const buildCredentialsStub = stub(adapter, 'buildCredentials');
+            buildCredentialsStub.callsFake((appId, oAuthScope) => {
+                return Promise.resolve(new MicrosoftAppCredentials(appId, '', undefined, oAuthScope));
+            });
+            const client = await adapter.createConnectorClientWithIdentity(serviceUrl, identity, audience);
+            assert(getOAuthScopeSpy.calledOnce, 'adapter.getOAuthScope should have been called');
+            assert(buildCredentialsStub.calledOnce, 'adapter.buildCredentials should have been called');
+
+            assert.strictEqual(client.credentials.appId, appId);
+            assert.strictEqual(client.credentials.oAuthScope, AuthenticationConstants.ToChannelFromBotOAuthScope);
+        });
     });
 
     it(`processActivity() should respect expectReplies if it's set via logic`, async () => {
@@ -397,7 +483,29 @@ describe(`BotFrameworkAdapter`, function () {
         assertResponse(res, 200, true);
     });
 
-    it(`processActivity() should not respect invokeResponses if the incoming request was of type "invoke"`, async () => {
+    it(`processActivity() should send only bufferedActivities when both expectReplies and invoke are set`, async () => {
+        const activity = JSON.parse(JSON.stringify(incomingMessage));
+        activity.type = ActivityTypes.Invoke;
+        activity.deliveryMode = DeliveryModes.ExpectReplies;
+
+        const req = new MockRequest(activity);
+        const res = new MockResponse();
+        const adapter = new AdapterUnderTest();
+        await adapter.processActivity(req, res, async (context) => {
+            await context.sendActivity({ type: 'invokeResponse', text: '1st message' });
+            await context.sendActivity({ type: 'invokeResponse', text: '2nd message' });
+        });
+
+        const bufferedReplies = res.body && res.body.activities;
+        assert.strictEqual(bufferedReplies && bufferedReplies.length, 2);
+        assert.strictEqual(bufferedReplies[0].text, '1st message');
+        assert.strictEqual(bufferedReplies[0].type, 'invokeResponse');
+        assert.strictEqual(bufferedReplies[1].text, '2nd message');
+        assert.strictEqual(bufferedReplies[1].type, 'invokeResponse');
+        assert.strictEqual(res.statusCode, StatusCodes.OK);
+    });
+
+    it(`processActivity() should not respect invokeResponses if the incoming request wasn't of type "invoke"`, async () => {
         const req = new MockRequest(incomingMessage);
         const res = new MockResponse();
         const adapter = new AdapterUnderTest();
@@ -1500,6 +1608,26 @@ describe(`BotFrameworkAdapter`, function () {
                 called = true;
             });
             assert(called, `bot logic not called.`);
+        });
+    });
+
+    describe('healthCheck', function () {
+        it ('should run healthCheck on invoke activity with name healthCheck', async () => {
+            const adapter = new BotFrameworkAdapter();
+            const bot = new ActivityHandler();
+
+            const activity = Object.assign({ name: 'healthCheck' }, incomingInvoke);
+
+            const req = new MockRequest(activity);
+            const res = new MockResponse();
+    
+            await adapter.processActivity(req, res, async (context) => {
+                await bot.run(context)
+                    .catch((e) => { console.log('error ' + e.msg); });
+            });
+
+            assertResponse(res, 200, true);
+            assert(true, res.body.healthResults.success);
         });
     });
 });

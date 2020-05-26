@@ -10,15 +10,20 @@ import { ComponentRegistration, ResourceExplorer, TypeBuilder, BuilderRegistrati
 import { Choice, ListStyle, ChoiceFactoryOptions, FindChoicesOptions } from 'botbuilder-dialogs';
 import { AdaptiveTypeBuilder } from './adaptiveTypeBuilder';
 import { AdaptiveDialog } from './adaptiveDialog';
-import { BeginDialog, BreakLoop, CancelAllDialogs, ContinueLoop, DeleteActivity, DeleteProperties, DeleteProperty, EditActions, EditArray, EmitEvent, EndDialog, EndTurn, ForEach, ForEachPage, GetActivityMembers, GetConversationMembers, GotoAction, IfCondition, LogAction, RepeatDialog, ReplaceDialog, SendActivity, SetProperties, SetProperty, SignOutUser, SwitchCondition, TraceActivity, UpdateActivity, ArrayChangeType, PropertyAssignmentConverter } from './actions';
+import { BeginDialog, BeginSkill, BreakLoop, CancelAllDialogs, ContinueLoop, DeleteActivity, DeleteProperties, DeleteProperty, EditActions, EditArray, EmitEvent, EndDialog, EndTurn, ForEach, ForEachPage, GetActivityMembers, GetConversationMembers, GotoAction, IfCondition, LogAction, RepeatDialog, ReplaceDialog, SendActivity, SetProperties, SetProperty, SignOutUser, SwitchCondition, TraceActivity, UpdateActivity, ArrayChangeType, PropertyAssignmentConverter } from './actions';
 import { AttachmentInput, ChoiceInput, ConfirmInput, DateTimeInput, NumberInput, OAuthInput, TextInput, AttachmentOutputFormat, ChoiceOutputFormat } from './input';
 import { OnActivity, OnAssignEntity, OnBeginDialog, OnCancelDialog, OnChooseEntity, OnChooseIntent, OnChooseProperty, OnClearProperty, OnCondition, OnConversationUpdateActivity, OnCustomEvent, OnDialogEvent, OnEndOfActions, OnEndOfConversationActivity, OnError, OnEventActivity, OnHandoffActivity, OnIntent, OnInvokeActivity, OnMessageActivity, OnMessageDeleteActivity, OnMessageReactionActivity, OnMessageUpdateActivity, OnQnAMatch, OnRepromptDialog, OnTypingActivity, OnUnknownIntent } from './conditions';
 import { CrossTrainedRecognizerSet, MultiLanguageRecognizer, RecognizerSet, ValueRecognizer, RegexRecognizer, IntentPatternConverter } from './recognizers';
 import { AgeEntityRecognizer, ConfirmationEntityRecognizer, CurrencyEntityRecognizer, DateTimeEntityRecognizer, DimensionEntityRecognizer, EmailEntityRecognizer, GuidEntityRecognizer, HashtagEntityRecognizer, IpEntityRecognizer, MentionEntityRecognizer, NumberEntityRecognizer, OrdinalEntityRecognizer, PercentageEntityRecognizer, PhoneNumberEntityRecognizer, RegexEntityRecognizer, TemperatureEntityRecognizer, UrlEntityRecognizer } from './recognizers/entityRecognizers';
-import { ObjectExpressionConverter, DialogExpressionConverter, BoolExpressionConverter, StringExpressionConverter, EnumExpressionConverter, ValueExpressionConverter, NumberExpressionConverter, TextTemplateConverter, ActivityTemplateConverter, ExpressionConverter, ArrayExpressionConverter, LanguageGeneratorConverter, IntExpressionConverter } from './converters';
+import { ObjectExpressionConverter, BoolExpressionConverter, StringExpressionConverter, EnumExpressionConverter, ValueExpressionConverter, NumberExpressionConverter, ExpressionConverter, ArrayExpressionConverter, IntExpressionConverter } from 'adaptive-expressions';
+import {DialogExpressionConverter, TextTemplateConverter, ActivityTemplateConverter } from './converters';
 import { ActionChangeType } from './actionChangeType';
 import { CaseConverter } from './actions/case';
 import { QnAMakerRecognizer } from './qnaMaker';
+import { TemplateEngineLanguageGenerator, ResourceMultiLanguageGenerator } from './generators';
+import { ConditionalSelector, FirstSelector, RandomSelector, TrueSelector } from './selectors';
+import { LanguageGeneratorConverter } from './converters/languageGeneratorConverter';
+import { LuisAdaptiveRecognizer } from './luis';
 
 export class AdaptiveDialogComponentRegistration implements ComponentRegistration {
     private _resourceExplorer: ResourceExplorer;
@@ -30,10 +35,23 @@ export class AdaptiveDialogComponentRegistration implements ComponentRegistratio
         this.registerBuilder('Microsoft.AdaptiveDialog', new AdaptiveTypeBuilder(AdaptiveDialog, this._resourceExplorer, {
             'generator': new LanguageGeneratorConverter()
         }));
+        this.registerBuilder('Microsoft.BeginSkill', new AdaptiveTypeBuilder(BeginSkill, this._resourceExplorer, {
+            'disabled': new BoolExpressionConverter(),
+            'activityProcessed': new BoolExpressionConverter(),
+            'resultProperty': new StringExpressionConverter(),
+            'botId': new StringExpressionConverter(),
+            'skillHostEndpoint': new StringExpressionConverter(),
+            'skillAppId': new StringExpressionConverter(),
+            'skillEndpoint': new StringExpressionConverter(),
+            'activity': new ActivityTemplateConverter(),
+            'connectionName': new StringExpressionConverter()
+        }));
         this.registerActions();
         this.registerConditions();
         this.registerInputs();
         this.registerRecognizers();
+        this.registerGenerators();
+        this.registerSelectors();
     }
 
     public getTypeBuilders(): BuilderRegistration[] {
@@ -219,13 +237,14 @@ export class AdaptiveDialogComponentRegistration implements ComponentRegistratio
         const inputDialogConverters = {
             'alwaysPrompt': new BoolExpressionConverter(),
             'allowInterruptions': new BoolExpressionConverter(),
+            'property': new StringExpressionConverter(),
+            'value': new ValueExpressionConverter(),
             'prompt': new ActivityTemplateConverter(),
             'unrecognizedPrompt': new ActivityTemplateConverter(),
             'invalidPrompt': new ActivityTemplateConverter(),
-            'property': new StringExpressionConverter(),
-            'value': new ValueExpressionConverter(),
-            'defaultValue': new ValueExpressionConverter(),
+            'defaultValueResponse': new ActivityTemplateConverter(),
             'maxTurnCount': new IntExpressionConverter(),
+            'defaultValue': new ValueExpressionConverter(),
             'disabled': new BoolExpressionConverter()
         };
         this.registerBuilder('Microsoft.AttachmentInput', new AdaptiveTypeBuilder(AttachmentInput, this._resourceExplorer,
@@ -272,6 +291,7 @@ export class AdaptiveDialogComponentRegistration implements ComponentRegistratio
     }
 
     private registerRecognizers(): void {
+        this.registerBuilder('Microsoft.Microsoft.LuisRecognizer', new AdaptiveTypeBuilder(LuisAdaptiveRecognizer, this._resourceExplorer, {}));
         this.registerBuilder('Microsoft.CrossTrainedRecognizerSet', new AdaptiveTypeBuilder(CrossTrainedRecognizerSet, this._resourceExplorer, {}));
         this.registerBuilder('Microsoft.MultiLanguageRecognizer', new AdaptiveTypeBuilder(MultiLanguageRecognizer, this._resourceExplorer, {}));
         this.registerBuilder('Microsoft.RecognizerSet', new AdaptiveTypeBuilder(RecognizerSet, this._resourceExplorer, {}));
@@ -308,5 +328,19 @@ export class AdaptiveDialogComponentRegistration implements ComponentRegistratio
             'context': new ObjectExpressionConverter(),
             'qnaId': new IntExpressionConverter()
         }));
+    }
+
+    private registerGenerators(): void {
+        this.registerBuilder('Microsoft.TemplateEngineLanguageGenerator', new AdaptiveTypeBuilder(TemplateEngineLanguageGenerator, this._resourceExplorer, {}));
+        this.registerBuilder('Microsoft.ResourceMultiLanguageGenerator', new AdaptiveTypeBuilder(ResourceMultiLanguageGenerator, this._resourceExplorer, {}));
+    }
+
+    private registerSelectors(): void {
+        this.registerBuilder('Microsoft.ConditionalSelector', new AdaptiveTypeBuilder(ConditionalSelector, this._resourceExplorer, {
+            'condition': new BoolExpressionConverter()
+        }));
+        this.registerBuilder('Microsoft.FirstSelector', new AdaptiveTypeBuilder(FirstSelector, this._resourceExplorer, {}));
+        this.registerBuilder('Microsoft.RandomSelector', new AdaptiveTypeBuilder(RandomSelector, this._resourceExplorer, {}));
+        this.registerBuilder('Microsoft.TrueSelector', new AdaptiveTypeBuilder(TrueSelector, this._resourceExplorer, {}));
     }
 }

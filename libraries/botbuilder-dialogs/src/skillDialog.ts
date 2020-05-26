@@ -9,11 +9,19 @@
 import {
     Activity,
     ActivityTypes,
+    CardFactory,
     ConversationReference,
     DeliveryModes,
     ExpectedReplies,
+    ExtendedUserTokenProvider,
+    OAuthCard,
     SkillConversationIdFactoryOptions,
-    TurnContext
+    TokenExchangeInvokeRequest,
+    tokenExchangeOperationName,
+    TokenResponse,
+    TurnContext,
+    Attachment,
+    StatusCodes
 } from 'botbuilder-core';
 import { BeginSkillDialogOptions } from './beginSkillDialogOptions';
 import {
@@ -26,7 +34,7 @@ import { DialogContext } from './dialogContext';
 import { DialogEvents } from './dialogEvents';
 import { SkillDialogOptions } from './skillDialogOptions';
 
-export class SkillDialog extends Dialog {
+export class SkillDialog extends Dialog<Partial<BeginSkillDialogOptions>> {
     protected dialogOptions: SkillDialogOptions;
 
     // This key uses a simple namespace as Symbols are not serializable.
@@ -50,8 +58,8 @@ export class SkillDialog extends Dialog {
         this.dialogOptions = dialogOptions;
     }
 
-    public async beginDialog(dc: DialogContext, options?: any): Promise<DialogTurnResult> {
-        const dialogArgs = SkillDialog.validateBeginDialogArgs(options);
+    public async beginDialog(dc: DialogContext, options: BeginSkillDialogOptions): Promise<DialogTurnResult> {
+        const dialogArgs = this.validateBeginDialogArgs(options);
 
         await dc.context.sendTraceActivity(`${ this.id }.beginDialog()`, undefined, undefined, `Using activity of type: ${ dialogArgs.activity.type }`);
 
@@ -61,7 +69,7 @@ export class SkillDialog extends Dialog {
         // Apply conversation reference and common properties from incoming activity before sending.
         const skillActivity = TurnContext.applyConversationReference(clonedActivity, TurnContext.getConversationReference(dc.context.activity), true) as Activity;
 
-        // Store the deliveryMode of the first forwarded activity
+        // Store delivery mode and connection name in dialog state for later use.
         dc.activeDialog.state[this.DeliveryModeStateKey] = dialogArgs.activity.deliveryMode;
 
         // Send the activity to the skill.
@@ -73,8 +81,11 @@ export class SkillDialog extends Dialog {
     }
 
     public async continueDialog(dc: DialogContext): Promise<DialogTurnResult> {
-        await dc.context.sendTraceActivity(`${ this.id }.continueDialog()`, undefined, undefined, `ActivityType: ${ dc.context.activity.type }`);
+        if (!this.onValidateActivity(dc.context.activity)) {
+            return Dialog.EndOfTurn;
+        }
 
+        await dc.context.sendTraceActivity(`${ this.id }.continueDialog()`, undefined, undefined, `ActivityType: ${ dc.context.activity.type }`);
 
         // Handle EndOfConversation from the skill (this will be sent to the this dialog by the SkillHandler if received from the Skill)
         if (dc.context.activity.type === ActivityTypes.EndOfConversation) {
@@ -82,17 +93,15 @@ export class SkillDialog extends Dialog {
             return await dc.endDialog(dc.context.activity.value);
         }
 
-        // Forward only Message and Event activities to the skill
-        if (dc.context.activity.type === ActivityTypes.Message || dc.context.activity.type === ActivityTypes.Event) {
-            // Create deep clone of the original activity to avoid altering it before forwarding it.
-            const skillActivity = this.cloneActivity(dc.context.activity);
-            skillActivity.deliveryMode = dc.activeDialog.state[this.DeliveryModeStateKey] as string;
+        // Create deep clone of the original activity to avoid altering it before forwarding it.
+        const skillActivity: Activity = this.cloneActivity(dc.context.activity);
 
-            // Just forward to the remote skill
-            const eocActivity = await this.sendToSkill(dc.context, skillActivity);
-            if (eocActivity) {
-                return await dc.endDialog(eocActivity.value);
-            }
+        skillActivity.deliveryMode = dc.activeDialog.state[this.DeliveryModeStateKey] as string;
+
+        // Just forward to the remote skill
+        const eocActivity = await this.sendToSkill(dc.context, skillActivity);
+        if (eocActivity) {
+            return await dc.endDialog(eocActivity.value);
         }
 
         return Dialog.EndOfTurn;
@@ -108,6 +117,7 @@ export class SkillDialog extends Dialog {
             const activity = TurnContext.applyConversationReference({ type: ActivityTypes.EndOfConversation }, reference, true);
             activity.channelData = context.activity.channelData;
 
+            // connectionName is not applicable during endDialog as we don't expect an OAuthCard in response.
             await this.sendToSkill(context, activity as Activity);
         }
 
@@ -122,6 +132,7 @@ export class SkillDialog extends Dialog {
         // Apply conversation reference and common properties from incoming activity before sending.
         const activity: Activity = TurnContext.applyConversationReference(repromptEvent, reference, true) as Activity;
         
+        // connectionName is not applicable for a reprompt as we don't expect an OAuthCard in response.
         await this.sendToSkill(context, activity);
     }
 
@@ -131,34 +142,139 @@ export class SkillDialog extends Dialog {
     }
 
     /**
+     * @protected
+     * Validates the activity sent during continueDialog.
+     * @remarks
+     * Override this method to implement a custom validator for the activity being sent during the continueDialog.
+     * This method can be used to ignore activities of a certain type if needed.
+     * If this method returns false, the dialog will end the turn without processing the activity.
+     * @param activity The Activity for the current turn of conversation.
+     */
+    protected onValidateActivity(activity: Activity): boolean {
+        return true;
+    }
+
+    /**
+     * @private
      * Clones the Activity entity.
      * @param activity Activity to clone.
      */
     private cloneActivity(activity: Partial<Activity>): Activity {
-        return Object.assign({} as Activity, activity);
+        return JSON.parse(JSON.stringify(activity));
     }
 
-    private static validateBeginDialogArgs(options: any): BeginSkillDialogOptions {
+    private validateBeginDialogArgs(options: BeginSkillDialogOptions): BeginSkillDialogOptions {
         if (!options) {
             throw new TypeError('Missing options parameter');
         }
 
-        const dialogArgs = options as BeginSkillDialogOptions;
-
-        if (!dialogArgs.activity) {
+        if (!options.activity) {
             throw new TypeError(`"activity" is undefined or null in options.`);
         }
 
-        // Only accept Message or Event activities
-        if (dialogArgs.activity.type !== ActivityTypes.Message && dialogArgs.activity.type !== ActivityTypes.Event) {
-            // Just forward to the remote skill
-            throw new TypeError(`Only "${ ActivityTypes.Message }" and "${ ActivityTypes.Event }" activities are supported. Received activity of type "${ dialogArgs.activity.type }" in options.`);
-        }
-
-        return dialogArgs;
+        return options;
     }
 
     private async sendToSkill(context: TurnContext, activity: Activity): Promise<Activity> {
+        if (activity.type === ActivityTypes.Invoke) {
+            // Force ExpectReplies for invoke activities so we can get the replies right away and send them back to the channel if needed.
+            // This makes sure that the dialog will receive the Invoke response from the skill and any other activities sent, including EoC.
+            activity.deliveryMode = DeliveryModes.ExpectReplies;
+        }
+
+        const skillConversationId = await this.createSkillConversationId(context, activity);
+
+        // Always save state before forwarding
+        // (the dialog stack won't get updated with the skillDialog and things won't work if you don't)
+        const skillInfo = this.dialogOptions.skill;
+        await this.dialogOptions.conversationState.saveChanges(context, true);
+
+        const response = await this.dialogOptions.skillClient.postActivity<ExpectedReplies>(this.dialogOptions.botId, skillInfo.appId, skillInfo.skillEndpoint, this.dialogOptions.skillHostEndpoint, skillConversationId, activity);
+
+        // Inspect the skill response status
+        if (!isSuccessStatusCode(response.status)) {
+            throw new Error(`Error invoking the skill id: "${ skillInfo.id }" at "${ skillInfo.skillEndpoint }" (status is ${ response.status }). \r\n ${ response.body }`);
+        }
+
+        let eocActivity: Activity;
+        const activities = typeof response.body !== 'undefined' && (response.body as ExpectedReplies).activities;
+        if (activity.deliveryMode === DeliveryModes.ExpectReplies && Array.isArray(activities)) {
+            // Process replies in the response.body.
+            for (const activityFromSkill of activities) {
+                if (activityFromSkill.type === ActivityTypes.EndOfConversation) {
+                    // Capture the EndOfConversation activity if it was sent from skill
+                    eocActivity = activityFromSkill;
+                } else if (await this.interceptOAuthCards(context, activityFromSkill, this.dialogOptions.connectionName)) {
+                    // Do nothing. The token exchange succeeded, so no OAuthCard needs to be shown to the user.
+                } else {
+                    await context.sendActivity(activityFromSkill);
+                }
+            };
+        }
+
+        return eocActivity;
+    }
+
+    /**
+     * Tells us if we should intercept the OAuthCard message.
+     * @remarks
+     * The SkillDialog only attempts to intercept OAuthCards when the following criteria are met:
+     * 1. An OAuthCard was sent from the skill
+     * 2. The SkillDialog was called with a connectionName
+     * 3. The current adapter supports token exchange
+     * If any of these criteria are false, return false.
+     * @private
+     */
+    private async interceptOAuthCards(context: TurnContext, activity: Activity, connectionName: string): Promise<boolean> {
+        if (!connectionName || !('exchangeToken' in context.adapter)) {
+            // The adapter may choose not to support token exchange, in which case we fallback to showing skill's OAuthCard to the user.
+            return false;
+        }
+
+        const oAuthCardAttachment: Attachment = (activity.attachments || []).find((c) => c.contentType === CardFactory.contentTypes.oauthCard);
+        if (oAuthCardAttachment) {
+            const tokenExchangeProvider: ExtendedUserTokenProvider = context.adapter as ExtendedUserTokenProvider;
+            const oAuthCard: OAuthCard = oAuthCardAttachment.content;
+
+            const uri = oAuthCard && oAuthCard.tokenExchangeResource && oAuthCard.tokenExchangeResource.uri;
+            if (uri) {
+                try {
+                    const result: TokenResponse = await tokenExchangeProvider.exchangeToken(
+                        context,
+                        connectionName,
+                        context.activity.from.id,
+                        { uri });
+                    
+                    if (result && result.token) {
+                        // If token above is null or undefined, then SSO has failed and we return false.
+                        // If not, send an invoke to the skill with the token.
+                        return await this.sendTokenExchangeInvokeToSkill(activity, oAuthCard.tokenExchangeResource.id, oAuthCard.connectionName, result.token);
+                    }
+                } catch (err) {
+                    // Failures in token exchange are not fatal. They simply mean that the user needs to be shown the skill's OAuthCard.
+                    return false;
+                }
+            }
+        }
+        return false;
+    }
+
+    private async sendTokenExchangeInvokeToSkill(incomingActivity: Activity, id: string, connectionName: string, token: string): Promise<boolean> {
+        const ref: Partial<ConversationReference> = TurnContext.getConversationReference(incomingActivity);
+        const activity: Activity = TurnContext.applyConversationReference({ ...incomingActivity }, ref) as any;
+        activity.type = ActivityTypes.Invoke;
+        activity.name = tokenExchangeOperationName;
+        activity.value = { connectionName, id, token } as TokenExchangeInvokeRequest;
+
+        // Send the activity to the Skill
+        const skillInfo = this.dialogOptions.skill;
+        const response = await this.dialogOptions.skillClient.postActivity<ExpectedReplies>(this.dialogOptions.botId, skillInfo.appId, skillInfo.skillEndpoint, this.dialogOptions.skillHostEndpoint, incomingActivity.conversation.id, activity);
+
+        // Check response status: true if success, false if failure
+        return isSuccessStatusCode(response.status);
+    }
+
+    private async createSkillConversationId(context: TurnContext, activity: Activity) {
         // Create a conversationId to interact with the skill and send the activity
         const conversationIdFactoryOptions: SkillConversationIdFactoryOptions = {
             fromBotOAuthScope: context.turnState.get(context.adapter.OAuthScopeKey),
@@ -177,34 +293,10 @@ export class SkillDialog extends Dialog {
             // use createSkillConversationId() instead.
             skillConversationId = await this.dialogOptions.conversationIdFactory.createSkillConversationId(TurnContext.getConversationReference(activity) as ConversationReference);
         }
-
-        // Always save state before forwarding
-        // (the dialog stack won't get updated with the skillDialog and things won't work if you don't)
-        const skillInfo = this.dialogOptions.skill;
-        await this.dialogOptions.conversationState.saveChanges(context, true);
-
-        const response = await this.dialogOptions.skillClient.postActivity<ExpectedReplies>(this.dialogOptions.botId, skillInfo.appId, skillInfo.skillEndpoint, this.dialogOptions.skillHostEndpoint, skillConversationId, activity);
-
-        // Inspect the skill response status
-        if (!(response.status >= 200 && response.status <= 299)) {
-            throw new Error(`Error invoking the skill id: "${ skillInfo.id }" at "${ skillInfo.skillEndpoint }" (status is ${ response.status }). \r\n ${ response.body }`);
-        }
-
-        let eocActivity: Activity;
-        if (activity.deliveryMode == DeliveryModes.ExpectReplies && response.body && response.body.activities) {
-            // Process replies in the response.Body.
-            if (Array.isArray(response.body.activities)) {
-                response.body.activities.forEach(async (fromSkillActivity: Activity): Promise<void> => {
-                    if (fromSkillActivity.type === ActivityTypes.EndOfConversation) {
-                        // Capture the EndOfConversation activity if it was sent from skill
-                        eocActivity = fromSkillActivity;
-                    } else {
-                        await context.sendActivity(fromSkillActivity);
-                    }
-                });
-            }
-        }
-
-        return eocActivity;
+        return skillConversationId;
     }
+}
+
+function isSuccessStatusCode(status: number): boolean {
+    return status >= StatusCodes.OK && status < StatusCodes.MULTIPLE_CHOICES;
 }
